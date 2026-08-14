@@ -158,7 +158,7 @@ function importArchive(file){
 
 let state={ dates:get(IDX,[]),
   cfg:get(CFG,{limit:40,openBands:[0,1,2],sort:"size"}),
-  msg:null, older:null, newer:null, showAll:false, asText:false, q:"" };
+  msg:null, older:null, newer:null, showAll:false, asText:false, q:"", productOverlay:null };
 if(state.cfg.openBands==null)state.cfg.openBands=[0,1,2];
 if(!state.cfg.sort)state.cfg.sort="size";
 if(!state.cfg.limit)state.cfg.limit=40;
@@ -326,6 +326,108 @@ function buildReport(){
 
 function specOf(g){ return [g.size,g.count,g.pack,g.section].filter(Boolean).join(" · "); }
 
+/* -------------------------- product history ------------------------
+   Every stored day's raw rows are re-grouped on read (see dayOf), so a
+   product's price trend can be read back across every day it appears in,
+   not just the two being compared on the Changes tab. */
+function productHistory(key){
+  return state.dates.map(d=>{
+    const day=dayOf(d);
+    const g=day&&day.groups[key];
+    return g?Object.assign({date:d},g):null;
+  }).filter(Boolean);
+}
+
+/* Simple line chart, hand-rolled (no charting library). Points are spaced
+   evenly by import order rather than by real calendar distance — imports
+   land roughly daily, and even spacing keeps the axis readable when a day
+   or two gets missed. Endpoint and extremes get direct labels; every value
+   is also in the table underneath, so nothing depends on hovering a dot. */
+function trendSVG(hist){
+  const W=640,H=210,padL=48,padR=14,padT=18,padB=26;
+  const innerW=W-padL-padR, innerH=H-padT-padB;
+  const prices=hist.map(h=>h.best);
+  const rawLo=Math.min.apply(null,prices), rawHi=Math.max.apply(null,prices);
+  let lo=rawLo, hi=rawHi;
+  if(lo===hi){ const pad=Math.max(0.5,lo*0.1); lo-=pad; hi+=pad; }
+  else { const pad=(hi-lo)*0.15; lo-=pad; hi+=pad; }
+  const x=i=>hist.length>1?padL+(i/(hist.length-1))*innerW:padL+innerW/2;
+  const y=p=>padT+innerH-((p-lo)/(hi-lo))*innerH;
+  const pts=hist.map((h,i)=>[x(i),y(h.best)]);
+
+  const gridLines=[0,0.5,1].map(t=>{
+    const gy=padT+innerH*t, val=hi-(hi-lo)*t;
+    return '<line class="trend-grid" x1="'+padL+'" x2="'+(W-padR)+'" y1="'+gy+'" y2="'+gy+'"/>'+
+      '<text class="trend-axis-label" x="'+(padL-8)+'" y="'+(gy+3)+'" text-anchor="end">'+money(val)+'</text>';
+  }).join("");
+
+  const maxIdx=prices.indexOf(rawHi), minIdx=prices.indexOf(rawLo), lastIdx=hist.length-1;
+  const dots=hist.map((h,i)=>{
+    const p=pts[i], tip='<title>'+esc(pretty(h.date))+': '+money(h.best)+'</title>';
+    return '<circle class="trend-dot-hit" cx="'+p[0]+'" cy="'+p[1]+'" r="12">'+tip+'</circle>'+
+      '<circle class="trend-dot" cx="'+p[0]+'" cy="'+p[1]+'" r="4">'+tip+'</circle>';
+  }).join("");
+
+  const labeled=new Set();
+  let labels="";
+  [lastIdx,maxIdx,minIdx].forEach(i=>{
+    if(labeled.has(i))return; labeled.add(i);
+    const p=pts[i];
+    const anchor=i===0?"start":(i===lastIdx?"end":"middle");
+    labels+='<text class="trend-end-label" x="'+p[0]+'" y="'+(p[1]-12)+'" text-anchor="'+anchor+'">'+money(hist[i].best)+'</text>';
+  });
+
+  const xLabels=(hist.length>1?[0,lastIdx]:[0]).map(i=>
+    '<text class="trend-axis-label" x="'+pts[i][0]+'" y="'+(H-6)+'" text-anchor="'+(i===0?"start":"end")+'">'+esc(pretty(hist[i].date))+'</text>').join("");
+
+  return '<svg class="trend-svg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">'+
+    gridLines+'<polyline class="trend-line" points="'+pts.map(p=>p.join(",")).join(" ")+'"/>'+
+    dots+labels+xLabels+'</svg>';
+}
+
+function trendTableHTML(hist){
+  const withDelta=hist.map((h,i)=>Object.assign({},h,{
+    delta:i>0?((h.best-hist[i-1].best)/hist[i-1].best)*100:null
+  }));
+  const rows=withDelta.slice().reverse().map(h=>
+    '<tr><td>'+pretty(h.date)+'</td><td class="num">'+money(h.best)+'</td>'+
+    '<td class="num">'+(h.delta==null?"—":pct(h.delta))+'</td>'+
+    '<td class="secondary">'+(h.offers.length>1?h.offers.length+" growers":esc(h.offers[0].mark||"unbranded"))+'</td>'+
+    '<td class="secondary">'+(h.origins&&h.origins.length?h.origins.map(c=>flag(c)+" "+esc(cname(c))).join(", "):"—")+'</td></tr>'
+  ).join("");
+  return '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Price</th><th>Change</th><th>Grower</th><th>Origin</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+function renderProductOverlay(){
+  const key=state.productOverlay;
+  if(!key)return;
+  const hist=productHistory(key);
+  const titleEl=document.getElementById("product-overlay-title");
+  const specEl=document.getElementById("product-overlay-spec");
+  const body=document.getElementById("product-overlay-body");
+  if(!hist.length){
+    titleEl.textContent="Not found"; specEl.textContent="";
+    body.innerHTML='<p class="secondary">No stored history for this product.</p>';
+    return;
+  }
+  const g=hist[hist.length-1];
+  titleEl.textContent=g.desc;
+  specEl.textContent=specOf(g)+"  ·  "+hist.length+" day"+(hist.length===1?"":"s")+" recorded";
+  let h="";
+  if(hist.length<2)h+='<p class="panel-hint">Only one day recorded so far — the trend fills in as more lists are imported.</p>';
+  h+=trendSVG(hist)+trendTableHTML(hist);
+  body.innerHTML=h;
+}
+function openProductHistory(key){
+  state.productOverlay=key;
+  renderProductOverlay();
+  document.getElementById("product-overlay").classList.remove("hidden");
+}
+function closeProductOverlay(){
+  state.productOverlay=null;
+  document.getElementById("product-overlay").classList.add("hidden");
+}
+
 /* Days imported before origin tracking existed have no origin data — it can't
    be recovered from what's stored, the .xls has to be read again. */
 function daysMissingOrigin(){
@@ -422,7 +524,7 @@ function offersHTML(offers){
 }
 function movedHTML(m,maxAbs){
   const w=Math.min(100,(Math.abs(m.delta)/maxAbs)*100);
-  return '<div class="pw-row"><div class="pw-name"><b>'+esc(m.desc)+'</b><div class="pw-spec">'+esc(specOf(m))+
+  return '<div class="pw-row pw-clickable" data-product="'+esc(m.key)+'"><div class="pw-name"><b>'+esc(m.desc)+'</b><div class="pw-spec">'+esc(specOf(m))+
     (m.offers.length>1?'  ·  '+m.offers.length+' growers':'')+'</div>'+
     originHTML(m.origins)+
     '<div class="pw-bar" style="width:'+w+'%;background:'+(m.delta>0?"var(--danger)":"var(--ok)")+'"></div>'+
@@ -431,7 +533,7 @@ function movedHTML(m,maxAbs){
     '<span class="pw-pct '+(m.delta>0?"pw-up":"pw-down")+'">'+pct(m.delta)+'</span></div>';
 }
 function plainHTML(g,was){
-  return '<div class="pw-row"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+'</div>'+
+  return '<div class="pw-row pw-clickable" data-product="'+esc(g.key)+'"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+'</div>'+
     originHTML(g.origins)+'</div>'+
     '<span class="'+(was?"pw-was":"pw-now")+'">'+(was?"was ":"")+money(g.best)+'</span></div>';
 }
@@ -595,7 +697,7 @@ function renderList(){
   const hits=q?all.filter(g=>g.desc.toUpperCase().indexOf(q)>=0):all;
   let h='<div class="band-group"><div class="band-body">';
   hits.slice(0,150).forEach(g=>{
-    h+='<div class="pw-row"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+
+    h+='<div class="pw-row pw-clickable" data-product="'+esc(g.key)+'"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+
       (g.offers.length>1?'  ·  '+g.offers.length+' growers':'')+'</div>'+
       originHTML(g.origins)+offersHTML(g.offers)+
       '</div><span class="pw-now">'+money(g.best)+'</span></div>';
@@ -662,10 +764,22 @@ function wireStatic(){
   ["dragenter","dragover"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("over");}));
   ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("over");}));
   drop.addEventListener("drop",e=>{ const f=e.dataTransfer.files[0]; if(f)handleFile(f); });
+
+  document.getElementById("product-overlay-close").onclick=closeProductOverlay;
+  document.getElementById("product-overlay").addEventListener("click",e=>{
+    if(e.target.id==="product-overlay")closeProductOverlay();
+  });
+  document.addEventListener("keydown",e=>{
+    if(e.key==="Escape"&&!document.getElementById("product-overlay").classList.contains("hidden"))closeProductOverlay();
+  });
 }
 
 function wireDynamic(){
   document.querySelectorAll("[data-goto]").forEach(b=>{b.onclick=()=>{ setActiveTab(b.dataset.goto); };});
+
+  document.querySelectorAll("[data-product]").forEach(el=>{
+    el.onclick=()=>openProductHistory(el.dataset.product);
+  });
 
   document.querySelectorAll("[data-act]").forEach(b=>{b.onclick=()=>{
     const a=b.dataset.act;

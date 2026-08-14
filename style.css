@@ -507,10 +507,70 @@ textarea.report-text {
 }
 .hide { display: none !important; }
 
+/* ---------- modal overlay (reusable) ---------- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 33, 23, .55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 1500;
+}
+.overlay.hidden { display: none; }
+.overlay-panel {
+  background: var(--panel);
+  width: 640px;
+  max-width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
+  border-radius: var(--radius-lg);
+  padding: 26px 26px 22px;
+  box-shadow: var(--shadow-lg);
+  position: relative;
+}
+.overlay-panel h2 { margin: 0 0 4px; font-size: 18px; font-weight: 700; color: var(--brand); padding-right: 30px; }
+.modal-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: var(--bg-hover);
+  color: var(--text-soft);
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-close:hover { background: var(--border); color: var(--text); }
+
+/* ---------- clickable rows ---------- */
+
+.pw-clickable { cursor: pointer; }
+.pw-clickable:hover { background: var(--bg-hover); }
+
+/* ---------- price trend chart ---------- */
+
+.trend-svg { width: 100%; height: auto; margin-top: 14px; overflow: visible; }
+.trend-grid { stroke: var(--border-soft); stroke-width: 1; }
+.trend-line { stroke: var(--brand); stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.trend-dot { fill: var(--brand); stroke: var(--panel); stroke-width: 2; }
+.trend-dot-hit { fill: transparent; cursor: pointer; }
+.trend-axis-label { fill: var(--muted); font-size: 10.5px; font-family: var(--font); }
+.trend-end-label { fill: var(--brand); font-size: 12.5px; font-weight: 700; font-family: var(--font); }
+
 @media (max-width: 768px) {
   html, body { height: auto; }
   #topbar { padding: 10px 14px; }
   #content { padding: 18px 14px 40px; }
   .pw-row { flex-wrap: wrap; }
   .pw-row .pw-pct { width: auto; text-align: left; }
+  .overlay-panel { padding: 20px 18px 18px; }
 }
