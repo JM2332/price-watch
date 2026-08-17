@@ -692,20 +692,22 @@ function renderChanges(){
     });
   }
 
-  if(creep.length){
-    const open=state.cfg.openBands.indexOf("creep")>=0;
-    h+='<div class="band-group"><div class="band-head'+(open?" open":"")+'" data-band="creep">'+
-       '<span class="band-title"><span class="caret">▸</span>Creeping</span>'+
-       '<span class="band-counts">'+creep.length+'</span></div>';
+  [["creepup","Creeping up",creep.filter(c=>c.cum>0)],
+   ["creepdown","Creeping down",creep.filter(c=>c.cum<0)]].forEach(([bandId,label,rowsIn])=>{
+    if(!rowsIn.length)return;
+    const open=state.cfg.openBands.indexOf(bandId)>=0;
+    h+='<div class="band-group"><div class="band-head'+(open?" open":"")+'" data-band="'+bandId+'">'+
+       '<span class="band-title"><span class="caret">▸</span>'+label+'</span>'+
+       '<span class="band-counts">'+rowsIn.length+'</span></div>';
     if(open){
       h+='<div class="band-body">'+
-         '<p class="panel-hint" style="padding:12px 16px 0">Moved '+CREEP_THRESHOLD+'%+ over the last '+CREEP_WINDOW+
-         ' recorded days without any single day being big enough on its own to land in Major or Significant above.</p>';
-      creep.forEach(c=>{h+=creepHTML(c);});
+         '<p class="panel-hint" style="padding:12px 16px 0">Moved '+CREEP_THRESHOLD+'%+ '+(bandId==="creepup"?"up":"down")+
+         ' over the last '+CREEP_WINDOW+' recorded days without any single day being big enough on its own to land in Major or Significant above.</p>';
+      rowsIn.forEach(c=>{h+=creepHTML(c);});
       h+='</div>';
     }
     h+='</div>';
-  }
+  });
 
   if(rep.origins&&rep.origins.length){
     const open=state.cfg.openBands.indexOf("org")>=0;
@@ -895,7 +897,7 @@ function wireDynamic(){
 
   document.querySelectorAll("[data-band]").forEach(el=>{el.onclick=()=>{
     const raw=el.dataset.band;
-    const i=(raw==="org"||raw==="creep")?raw:Number(raw);
+    const i=isNaN(Number(raw))?raw:Number(raw);
     const o=state.cfg.openBands.slice();
     const at=o.indexOf(i);
     if(at>=0)o.splice(at,1); else o.push(i);
