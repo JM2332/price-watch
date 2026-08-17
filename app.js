@@ -52,6 +52,13 @@ const BANDS=[
   {lo:0,  hi:2,        label:"Negligible",  note:"under 2%"}
 ];
 
+/* A product creeping up (or down) a little each day never trips a single
+   day-to-day band — see HANDOVER.md. These catch that: cumulative move
+   over the last CREEP_WINDOW recorded days, only surfaced if no single
+   day in that window was already big enough to land in Major/Significant
+   on its own (that's already visible above, no need to repeat it here). */
+const CREEP_WINDOW=8, CREEP_MIN_POINTS=4, CREEP_THRESHOLD=10;
+
 /* ---------------------------- storage ------------------------------
    Firestore (days/{date}, raw parsed rows — not the grouped output, so
    grouping/derivation logic can change later without re-importing old
@@ -324,6 +331,38 @@ function buildReport(){
   return{first:false,moved,added,gone,origins,unchanged,total};
 }
 
+/* Anchored to state.newer, not necessarily the latest stored day overall —
+   the compare dropdowns let Jake pick an older "newer", and this should
+   answer "as of the day I'm looking at", not silently look further ahead.
+   dayOf() is precomputed once per date here rather than per product —
+   productHistory() re-derives per product and is fine for a single click,
+   but calling it once per product in a ~450-product list would re-run
+   groupItems() over every stored day's rows for every single product. */
+function buildCreepReport(){
+  const B=dayOf(state.newer); if(!B)return [];
+  const cutoff=state.dates.indexOf(state.newer);
+  const relevantDates=state.dates.slice(0,cutoff+1);
+  const days=relevantDates.map(d=>dayOf(d));
+  const out=[];
+  Object.keys(B.groups).forEach(k=>{
+    const hist=days.map((day,i)=>day&&day.groups[k]?Object.assign({date:relevantDates[i]},day.groups[k]):null).filter(Boolean);
+    if(hist.length<CREEP_MIN_POINTS)return;
+    const window=hist.slice(-CREEP_WINDOW);
+    if(window.length<CREEP_MIN_POINTS)return;
+    const first=window[0], last=window[window.length-1];
+    const cum=((last.best-first.best)/first.best)*100;
+    if(Math.abs(cum)<CREEP_THRESHOLD)return;
+    const prev=hist[hist.length-2];
+    if(prev){
+      const dayDelta=((last.best-prev.best)/prev.best)*100;
+      if(Math.abs(dayDelta)>=BANDS[1].lo)return; /* already flagged Major/Significant today */
+    }
+    out.push(Object.assign({},last,{cum,days:window.length,from:first.best,fromDate:first.date}));
+  });
+  out.sort((a,b)=>Math.abs(b.cum)-Math.abs(a.cum));
+  return out;
+}
+
 function specOf(g){ return [g.size,g.count,g.pack,g.section].filter(Boolean).join(" · "); }
 
 /* -------------------------- product history ------------------------
@@ -532,6 +571,13 @@ function movedHTML(m,maxAbs){
     '<span class="pw-was">'+money(m.was)+'→</span><span class="pw-now">'+money(m.best)+'</span>'+
     '<span class="pw-pct '+(m.delta>0?"pw-up":"pw-down")+'">'+pct(m.delta)+'</span></div>';
 }
+function creepHTML(c){
+  return '<div class="pw-row pw-clickable" data-product="'+esc(c.key)+'"><div class="pw-name"><b>'+esc(c.desc)+'</b><div class="pw-spec">'+esc(specOf(c))+
+    '  ·  '+c.days+' days since '+pretty(c.fromDate)+'</div>'+
+    originHTML(c.origins)+'</div>'+
+    '<span class="pw-was">'+money(c.from)+'→</span><span class="pw-now">'+money(c.best)+'</span>'+
+    '<span class="pw-pct '+(c.cum>0?"pw-up":"pw-down")+'">'+pct(c.cum)+'</span></div>';
+}
 function plainHTML(g,was){
   return '<div class="pw-row pw-clickable" data-product="'+esc(g.key)+'"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+'</div>'+
     originHTML(g.origins)+'</div>'+
@@ -617,30 +663,49 @@ function renderChanges(){
     el.innerHTML=h; return;
   }
 
-  if(!all.length){
+  const creep=buildCreepReport();
+
+  if(!all.length&&!creep.length){
     h+='<div class="empty-state"><p>Not a single price changed between these two days.</p></div>';
     el.innerHTML=h; return;
   }
 
-  BANDS.forEach((band,i)=>{
-    const rowsIn=buckets[i];
-    if(!rowsIn.length)return;
-    const open=state.cfg.openBands.indexOf(i)>=0;
-    const up=rowsIn.filter(m=>m.delta>0).length, dn=rowsIn.length-up;
-    h+='<div class="band-group"><div class="band-head'+(open?" open":"")+'" data-band="'+i+'">'+
-       '<span class="band-title"><span class="caret">▸</span>'+band.label+' <span class="band-note">'+band.note+'</span></span>'+
-       '<span class="band-counts">'+rowsIn.length+' &middot; <span class="pw-up">'+up+' up</span> <span class="pw-down">'+dn+' down</span></span></div>';
+  if(all.length){
+    BANDS.forEach((band,i)=>{
+      const rowsIn=buckets[i];
+      if(!rowsIn.length)return;
+      const open=state.cfg.openBands.indexOf(i)>=0;
+      const up=rowsIn.filter(m=>m.delta>0).length, dn=rowsIn.length-up;
+      h+='<div class="band-group"><div class="band-head'+(open?" open":"")+'" data-band="'+i+'">'+
+         '<span class="band-title"><span class="caret">▸</span>'+band.label+' <span class="band-note">'+band.note+'</span></span>'+
+         '<span class="band-counts">'+rowsIn.length+' &middot; <span class="pw-up">'+up+' up</span> <span class="pw-down">'+dn+' down</span></span></div>';
+      if(open){
+        h+='<div class="band-body">';
+        const shown=state.showAll?rowsIn:rowsIn.slice(0,state.cfg.limit);
+        sortMoved(shown).forEach(m=>{h+=movedHTML(m,maxAbs);});
+        if(rowsIn.length>shown.length)
+          h+='<div class="band-more">and '+(rowsIn.length-shown.length)+
+             ' more in this band <button class="btn-outline sm" data-act="showall">Show all</button></div>';
+        h+='</div>';
+      }
+      h+='</div>';
+    });
+  }
+
+  if(creep.length){
+    const open=state.cfg.openBands.indexOf("creep")>=0;
+    h+='<div class="band-group"><div class="band-head'+(open?" open":"")+'" data-band="creep">'+
+       '<span class="band-title"><span class="caret">▸</span>Creeping</span>'+
+       '<span class="band-counts">'+creep.length+'</span></div>';
     if(open){
-      h+='<div class="band-body">';
-      const shown=state.showAll?rowsIn:rowsIn.slice(0,state.cfg.limit);
-      sortMoved(shown).forEach(m=>{h+=movedHTML(m,maxAbs);});
-      if(rowsIn.length>shown.length)
-        h+='<div class="band-more">and '+(rowsIn.length-shown.length)+
-           ' more in this band <button class="btn-outline sm" data-act="showall">Show all</button></div>';
+      h+='<div class="band-body">'+
+         '<p class="panel-hint" style="padding:12px 16px 0">Moved '+CREEP_THRESHOLD+'%+ over the last '+CREEP_WINDOW+
+         ' recorded days without any single day being big enough on its own to land in Major or Significant above.</p>';
+      creep.forEach(c=>{h+=creepHTML(c);});
       h+='</div>';
     }
     h+='</div>';
-  });
+  }
 
   if(rep.origins&&rep.origins.length){
     const open=state.cfg.openBands.indexOf("org")>=0;
@@ -830,7 +895,7 @@ function wireDynamic(){
 
   document.querySelectorAll("[data-band]").forEach(el=>{el.onclick=()=>{
     const raw=el.dataset.band;
-    const i=(raw==="org")?"org":Number(raw);
+    const i=(raw==="org"||raw==="creep")?raw:Number(raw);
     const o=state.cfg.openBands.slice();
     const at=o.indexOf(i);
     if(at>=0)o.splice(at,1); else o.push(i);
