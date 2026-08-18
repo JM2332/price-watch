@@ -838,7 +838,7 @@ function wireStatic(){
   });
 
   document.getElementById("list-search").oninput=e=>{
-    const p=e.target.selectionStart; state.q=e.target.value; renderList();
+    const p=e.target.selectionStart; state.q=e.target.value; renderList(); wireDynamic();
     const s2=document.getElementById("list-search"); s2.focus(); s2.setSelectionRange(p,p);
   };
 
@@ -926,7 +926,7 @@ function wireDynamic(){
     const o=state.cfg.openBands.slice();
     const at=o.indexOf(i);
     if(at>=0)o.splice(at,1); else o.push(i);
-    state.cfg.openBands=o; put(CFG,state.cfg); renderChanges();
+    state.cfg.openBands=o; put(CFG,state.cfg); renderAll();
   };});
 }
 
