@@ -1,6 +1,8 @@
 Add-Type -AssemblyName System.Drawing
 
-$text = "PRICES"
+$text = [string][char]0x00A3  # £ (POUND SIGN) — written as a code point, not a literal
+                               # byte, since PowerShell 5.1 can misread a UTF-8-encoded
+                               # non-ASCII source file as Windows-1252 and mangle it
 $fontFamily = "Arial"
 
 # Measure the true ink bounding box of the text (not the font's nominal
@@ -63,8 +65,9 @@ function New-Icon($size, $path) {
   $brush = New-Object System.Drawing.SolidBrush($bg)
   $g.FillPath($brush, $path2)
 
-  # target ink width = 78% of icon width
-  $targetInkW = $size * 0.78
+  # target ink width = 62% of icon width (a single glyph reads better
+  # smaller than a full word would at the same fill ratio)
+  $targetInkW = $size * 0.62
   $finalFontSize = $refSize * ($targetInkW / $inkW)
   $scale = $finalFontSize / $refSize
 
