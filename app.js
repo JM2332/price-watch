@@ -59,6 +59,14 @@ const BANDS=[
    on its own (that's already visible above, no need to repeat it here). */
 const CREEP_WINDOW=8, CREEP_MIN_POINTS=4, CREEP_THRESHOLD=10;
 
+/* Products are matched on DESCRIPTION+SIZE+COUNT+PACKAGING, not a stable
+   ID (see HANDOVER.md) — a rare false match between two genuinely
+   different products sharing a spec would look like an ordinary price
+   change with nothing to flag it. A move this large in produce pricing
+   is unusual enough that it's worth a second look either way: either a
+   real, rare event, or the key matched two different products. */
+const EXTREME_MOVE_PCT=50;
+
 /* ---------------------------- storage ------------------------------
    Firestore (days/{date}, raw parsed rows — not the grouped output, so
    grouping/derivation logic can change later without re-importing old
@@ -288,9 +296,9 @@ function groupItems(items){
 function handleFile(file){
   const fr=new FileReader();
   fr.onload=e=>{
-    let parsed=null,rows=null;
+    let parsed=null,rows=null,wb=null;
     try{
-      const wb=XLSX.read(new Uint8Array(e.target.result),{type:"array"});
+      wb=XLSX.read(new Uint8Array(e.target.result),{type:"array"});
       rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,blankrows:true,defval:""});
       parsed=parseNationwide(rows);
     }catch(err){ console.error(err); }
@@ -310,7 +318,9 @@ function handleFile(file){
     const withOrigin=Object.keys(g).filter(k=>g[k].origins.length).length;
     state.msg={tone:"ok",text:pretty(date)+(existed?" replaced":" loaded")+" — "+parsed.items.length+
       " priced rows covering "+n+" products"+(parsed.dropped?", "+parsed.dropped+" rows with no price ignored":"")+
-      (withOrigin?"  ·  origin found on "+withOrigin+" of them":"  ·  no country of origin column found in this file")+"."};
+      (withOrigin?"  ·  origin found on "+withOrigin+" of them":"  ·  no country of origin column found in this file")+
+      (wb.SheetNames.length>1?"  ·  this file has "+wb.SheetNames.length+" sheets, only the first ("+
+        wb.SheetNames[0]+") was read — worth checking the others don't matter":"")+"."};
     setActiveTab("changes");
     renderAll();
   };
@@ -568,6 +578,17 @@ function originNote(rep){
   return L.join("\n");
 }
 
+function creepText(creep){
+  const up=creep.filter(c=>c.cum>0), down=creep.filter(c=>c.cum<0);
+  const L=["Creeping prices — "+pretty(state.newer),""];
+  const fmt=c=>"  "+pct(c.cum).padStart(7)+"  "+money(c.from)+" -> "+money(c.best)+"  "+c.desc+
+    ((c.size||c.count)?" ("+[c.size,c.count].filter(Boolean).join(" ")+")":"")+"  since "+pretty(c.fromDate)+
+    (Math.abs(c.cum)>=EXTREME_MOVE_PCT?"  [check this is the same product]":"");
+  if(up.length){L.push("UP ("+up.length+")"); up.forEach(c=>L.push(fmt(c))); L.push("");}
+  if(down.length){L.push("DOWN ("+down.length+")"); down.forEach(c=>L.push(fmt(c))); L.push("");}
+  return L.join("\n");
+}
+
 function textReport(rep,all,risers,fallers,buckets){
   const L=["Nationwide price changes — "+pretty(state.newer)+" vs "+pretty(state.older),
     all.length+" products changed ("+risers.length+" up, "+fallers.length+" down) out of "+rep.total,""];
@@ -634,10 +655,16 @@ function offersHTML(offers){
     '<div><b class="'+(i===0?"best":"")+'">'+money(o.price)+'</b><span>'+esc(o.mark||"unbranded")+
     (o.origin?' &middot; '+flag(o.origin)+" "+esc(cname(o.origin)):"")+'</span></div>').join("")+'</div>';
 }
+function extremeTag(p){
+  return Math.abs(p)>=EXTREME_MOVE_PCT
+    ?'<span class="pw-extreme" title="Unusually large for produce pricing — worth checking this is really the same product. Matching runs on description, size, count and packaging, not a stable ID, so two different products can occasionally share a spec.">⚠ check match</span>'
+    :'';
+}
 function movedHTML(m,maxAbs,spark){
   const w=Math.min(100,(Math.abs(m.delta)/maxAbs)*100);
   return '<div class="pw-row pw-clickable" data-product="'+esc(m.key)+'"><div class="pw-name"><b>'+esc(m.desc)+'</b><div class="pw-spec">'+esc(specOf(m))+
     (m.offers.length>1?'  ·  '+m.offers.length+' growers':'')+'</div>'+
+    extremeTag(m.delta)+
     originHTML(m.origins)+
     '<div class="pw-bar" style="width:'+w+'%;background:'+(m.delta>0?"var(--danger)":"var(--ok)")+'"></div>'+
     offersHTML(m.offers)+'</div>'+
@@ -648,6 +675,7 @@ function movedHTML(m,maxAbs,spark){
 function creepHTML(c){
   return '<div class="pw-row pw-clickable" data-product="'+esc(c.key)+'"><div class="pw-name"><b>'+esc(c.desc)+'</b><div class="pw-spec">'+esc(specOf(c))+
     '  ·  '+c.days+' days since '+pretty(c.fromDate)+'</div>'+
+    extremeTag(c.cum)+
     originHTML(c.origins)+'</div>'+
     (c.sparkline?'<span class="pw-spark">'+c.sparkline+'</span>':'')+
     '<span class="pw-was">'+money(c.from)+'→</span><span class="pw-now">'+money(c.best)+'</span>'+
@@ -794,6 +822,7 @@ function renderChanges(){
     }
     h+='</div>';
   });
+  if(creep.length)h+='<div style="padding:0 2px 10px"><button class="btn-outline sm" data-act="creeptext">Copy creeping list</button></div>';
 
   if(rep.origins&&rep.origins.length){
     const open=state.cfg.openBands.indexOf("org")>=0;
@@ -973,6 +1002,17 @@ function wireDynamic(){
       document.body.appendChild(ta); ta.select();
       try{document.execCommand("copy");b.textContent="Copied";
         setTimeout(()=>{b.textContent="Copy a customer note";},1500);}catch(e){}
+      document.body.removeChild(ta);
+      return;
+    }
+    else if(a==="creeptext"){
+      const cutDates=historyDatesUpTo(state.newer);
+      const t=creepText(buildCreepReport(cutDates,batchDays(cutDates)));
+      const ta=document.createElement("textarea");
+      ta.value=t; ta.style.position="fixed"; ta.style.opacity="0";
+      document.body.appendChild(ta); ta.select();
+      try{document.execCommand("copy");b.textContent="Copied";
+        setTimeout(()=>{b.textContent="Copy creeping list";},1500);}catch(e){}
       document.body.removeChild(ta);
       return;
     }

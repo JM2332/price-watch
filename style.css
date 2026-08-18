@@ -23,6 +23,8 @@
   --danger-bg: #fbe8e2;
   --ok: #2f6b40;
   --ok-bg: #e2f0e0;
+  --warn: #a8721f;
+  --warn-bg: #f7ecd8;
 
   --radius-sm: 6px;
   --radius: 10px;
@@ -438,6 +440,20 @@ html, body {
 .growers-list div { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; gap: 8px; }
 .growers-list b { font-weight: 700; color: var(--text); }
 .growers-list .best { color: var(--ok); font-weight: 700; }
+
+.pw-extreme {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+  margin-top: 4px;
+  cursor: help;
+}
 
 .origin-tag { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
 .origin-shift { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 12px; flex-wrap: wrap; }
