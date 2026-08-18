@@ -65,10 +65,17 @@ function New-Icon($size, $path) {
   $brush = New-Object System.Drawing.SolidBrush($bg)
   $g.FillPath($brush, $path2)
 
-  # target ink width = 62% of icon width (a single glyph reads better
-  # smaller than a full word would at the same fill ratio)
-  $targetInkW = $size * 0.62
-  $finalFontSize = $refSize * ($targetInkW / $inkW)
+  # £ is tall and narrow (H/W ratio ~1.4) — sizing by width alone let the
+  # glyph balloon to ~90% of the icon's height, well outside the safe
+  # zone maskable icons need (the OS can crop outside it), which is what
+  # made it look oversized and get clipped into a circle. Constrain by
+  # BOTH dimensions against a conservative 42% box and take whichever is
+  # smaller, same margin the pin icon ends up with by design.
+  $targetInkW = $size * 0.42
+  $targetInkH = $size * 0.42
+  $fontSizeByW = $refSize * ($targetInkW / $inkW)
+  $fontSizeByH = $refSize * ($targetInkH / $inkH)
+  $finalFontSize = [Math]::Min($fontSizeByW, $fontSizeByH)
   $scale = $finalFontSize / $refSize
 
   $font = New-Object System.Drawing.Font($fontFamily, $finalFontSize, [System.Drawing.FontStyle]::Bold)
