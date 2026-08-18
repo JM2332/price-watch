@@ -347,21 +347,49 @@ function buildReport(){
   return{first:false,moved,added,gone,origins,unchanged,total};
 }
 
-/* Anchored to state.newer, not necessarily the latest stored day overall —
-   the compare dropdowns let Jake pick an older "newer", and this should
-   answer "as of the day I'm looking at", not silently look further ahead.
-   dayOf() is precomputed once per date here rather than per product —
-   productHistory() re-derives per product and is fine for a single click,
-   but calling it once per product in a ~450-product list would re-run
-   groupItems() over every stored day's rows for every single product. */
-function buildCreepReport(){
-  const B=dayOf(state.newer); if(!B)return [];
-  const cutoff=state.dates.indexOf(state.newer);
-  const relevantDates=state.dates.slice(0,cutoff+1);
-  const days=relevantDates.map(d=>dayOf(d));
+/* Batches dayOf() once per date instead of once per product — calling it
+   once per product in a ~450-product list would re-run groupItems() over
+   every stored day's rows for every single product. Shared by anything
+   that needs per-product history across many products at once: creep
+   detection, inline sparklines, the all-history product search. */
+function batchDays(dates){ return dates.map(d=>dayOf(d)); }
+function historyFromBatch(key,dates,days){
+  return days.map((day,i)=>day&&day.groups[key]?Object.assign({date:dates[i]},day.groups[key]):null).filter(Boolean);
+}
+/* Stored days up to and including anchorDate — the compare dropdowns let
+   Jake pick an older "newer", and sparklines/creep detection should answer
+   "as of the day I'm looking at", not silently look past it. */
+function historyDatesUpTo(anchorDate){
+  const cutoff=state.dates.indexOf(anchorDate);
+  return cutoff>=0?state.dates.slice(0,cutoff+1):state.dates.slice();
+}
+
+/* Every distinct product ever recorded, not just today's list — reachable
+   even if it hasn't appeared for weeks. desc/spec/price reflect its most
+   recent occurrence; firstSeen/lastSeen track the full span. Only called
+   when there's an active search — O(days x rows), no reason to pay that
+   on every render when nobody's searching. */
+function buildProductIndex(){
+  const dates=state.dates, days=batchDays(dates);
+  const idx={};
+  days.forEach((day,i)=>{
+    if(!day)return;
+    Object.keys(day.groups).forEach(k=>{
+      const firstSeen=idx[k]?idx[k].firstSeen:dates[i];
+      idx[k]=Object.assign({},day.groups[k],{lastSeen:dates[i],firstSeen});
+    });
+  });
+  return {idx,dates,days};
+}
+
+/* dates/days: the batched history up to and including state.newer (see
+   historyDatesUpTo/batchDays) — accepted rather than recomputed so a
+   single render pass can share one batch between this and sparklines. */
+function buildCreepReport(dates,days){
+  const B=days[days.length-1]; if(!B)return [];
   const out=[];
   Object.keys(B.groups).forEach(k=>{
-    const hist=days.map((day,i)=>day&&day.groups[k]?Object.assign({date:relevantDates[i]},day.groups[k]):null).filter(Boolean);
+    const hist=historyFromBatch(k,dates,days);
     if(hist.length<CREEP_MIN_POINTS)return;
     const window=hist.slice(-CREEP_WINDOW);
     if(window.length<CREEP_MIN_POINTS)return;
@@ -373,7 +401,7 @@ function buildCreepReport(){
       const dayDelta=((last.best-prev.best)/prev.best)*100;
       if(Math.abs(dayDelta)>=BANDS[1].lo)return; /* already flagged Major/Significant today */
     }
-    out.push(Object.assign({},last,{cum,days:window.length,from:first.best,fromDate:first.date}));
+    out.push(Object.assign({},last,{cum,days:window.length,from:first.best,fromDate:first.date,sparkline:sparklineSVG(window)}));
   });
   out.sort((a,b)=>Math.abs(b.cum)-Math.abs(a.cum));
   return out;
@@ -391,6 +419,26 @@ function productHistory(key){
     const g=day&&day.groups[key];
     return g?Object.assign({date:d},g):null;
   }).filter(Boolean);
+}
+
+/* Tiny inline trend indicator for a row — no axes/labels, just the shape,
+   in a de-emphasised colour so it doesn't compete with the up/down colour
+   already carried by the price and percentage beside it. Its job is
+   showing whether a move was one jump or a steady climb, not repeating
+   direction. Skipped (returns "") under 2 points — nothing to show. */
+function sparklineSVG(hist){
+  if(!hist||hist.length<2)return "";
+  const W=64,H=22,pad=3;
+  const prices=hist.map(h=>h.best);
+  const lo=Math.min.apply(null,prices), hi=Math.max.apply(null,prices);
+  const x=i=>pad+(i/(hist.length-1))*(W-pad*2);
+  const y=p=>hi===lo?H/2:pad+(H-pad*2)-((p-lo)/(hi-lo))*(H-pad*2);
+  const pts=hist.map((h,i)=>x(i)+","+y(h.best)).join(" ");
+  const last=hist[hist.length-1];
+  return '<svg class="spark-svg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+
+    '<polyline class="spark-line" points="'+pts+'"/>'+
+    '<circle class="spark-dot" cx="'+x(hist.length-1)+'" cy="'+y(last.best)+'" r="2"/>'+
+    '</svg>';
 }
 
 /* Simple line chart, hand-rolled (no charting library). Points are spaced
@@ -586,13 +634,14 @@ function offersHTML(offers){
     '<div><b class="'+(i===0?"best":"")+'">'+money(o.price)+'</b><span>'+esc(o.mark||"unbranded")+
     (o.origin?' &middot; '+flag(o.origin)+" "+esc(cname(o.origin)):"")+'</span></div>').join("")+'</div>';
 }
-function movedHTML(m,maxAbs){
+function movedHTML(m,maxAbs,spark){
   const w=Math.min(100,(Math.abs(m.delta)/maxAbs)*100);
   return '<div class="pw-row pw-clickable" data-product="'+esc(m.key)+'"><div class="pw-name"><b>'+esc(m.desc)+'</b><div class="pw-spec">'+esc(specOf(m))+
     (m.offers.length>1?'  ·  '+m.offers.length+' growers':'')+'</div>'+
     originHTML(m.origins)+
     '<div class="pw-bar" style="width:'+w+'%;background:'+(m.delta>0?"var(--danger)":"var(--ok)")+'"></div>'+
     offersHTML(m.offers)+'</div>'+
+    (spark?'<span class="pw-spark">'+spark+'</span>':'')+
     '<span class="pw-was">'+money(m.was)+'→</span><span class="pw-now">'+money(m.best)+'</span>'+
     '<span class="pw-pct '+(m.delta>0?"pw-up":"pw-down")+'">'+pct(m.delta)+'</span></div>';
 }
@@ -600,6 +649,7 @@ function creepHTML(c){
   return '<div class="pw-row pw-clickable" data-product="'+esc(c.key)+'"><div class="pw-name"><b>'+esc(c.desc)+'</b><div class="pw-spec">'+esc(specOf(c))+
     '  ·  '+c.days+' days since '+pretty(c.fromDate)+'</div>'+
     originHTML(c.origins)+'</div>'+
+    (c.sparkline?'<span class="pw-spark">'+c.sparkline+'</span>':'')+
     '<span class="pw-was">'+money(c.from)+'→</span><span class="pw-now">'+money(c.best)+'</span>'+
     '<span class="pw-pct '+(c.cum>0?"pw-up":"pw-down")+'">'+pct(c.cum)+'</span></div>';
 }
@@ -607,6 +657,13 @@ function plainHTML(g,was){
   return '<div class="pw-row pw-clickable" data-product="'+esc(g.key)+'"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+'</div>'+
     originHTML(g.origins)+'</div>'+
     '<span class="'+(was?"pw-was":"pw-now")+'">'+(was?"was ":"")+money(g.best)+'</span></div>';
+}
+function historyOnlyHTML(g,spark){
+  return '<div class="pw-row pw-clickable" data-product="'+esc(g.key)+'"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+
+    '  ·  last seen '+pretty(g.lastSeen)+'</div>'+
+    originHTML(g.origins)+'</div>'+
+    (spark?'<span class="pw-spark">'+spark+'</span>':'')+
+    '<span class="pw-was">last '+money(g.best)+'</span></div>';
 }
 
 function renderAlerts(){
@@ -688,7 +745,8 @@ function renderChanges(){
     el.innerHTML=h; return;
   }
 
-  const creep=buildCreepReport();
+  const cutDates=historyDatesUpTo(state.newer), cutDays=batchDays(cutDates);
+  const creep=buildCreepReport(cutDates,cutDays);
 
   if(!all.length&&!creep.length){
     h+='<div class="empty-state"><p>Not a single price changed between these two days.</p></div>';
@@ -707,7 +765,10 @@ function renderChanges(){
       if(open){
         h+='<div class="band-body">';
         const shown=state.showAll?rowsIn:rowsIn.slice(0,state.cfg.limit);
-        sortMoved(shown).forEach(m=>{h+=movedHTML(m,maxAbs);});
+        sortMoved(shown).forEach(m=>{
+          const spark=sparklineSVG(historyFromBatch(m.key,cutDates,cutDays).slice(-CREEP_WINDOW));
+          h+=movedHTML(m,maxAbs,spark);
+        });
         if(rowsIn.length>shown.length)
           h+='<div class="band-more">and '+(rowsIn.length-shown.length)+
              ' more in this band <button class="btn-outline sm" data-act="showall">Show all</button></div>';
@@ -787,16 +848,41 @@ function renderList(){
   const all=Object.keys(B.groups).map(k=>B.groups[k]).sort((a,b)=>a.desc.localeCompare(b.desc));
   const q=state.q.toUpperCase();
   const hits=q?all.filter(g=>g.desc.toUpperCase().indexOf(q)>=0):all;
+
+  const cutDates=historyDatesUpTo(state.newer), cutDays=batchDays(cutDates);
+
   let h='<div class="band-group"><div class="band-body">';
   hits.slice(0,150).forEach(g=>{
+    const spark=sparklineSVG(historyFromBatch(g.key,cutDates,cutDays).slice(-CREEP_WINDOW));
     h+='<div class="pw-row pw-clickable" data-product="'+esc(g.key)+'"><div class="pw-name"><b>'+esc(g.desc)+'</b><div class="pw-spec">'+esc(specOf(g))+
       (g.offers.length>1?'  ·  '+g.offers.length+' growers':'')+'</div>'+
       originHTML(g.origins)+offersHTML(g.offers)+
-      '</div><span class="pw-now">'+money(g.best)+'</span></div>';
+      '</div>'+(spark?'<span class="pw-spark">'+spark+'</span>':'')+
+      '<span class="pw-now">'+money(g.best)+'</span></div>';
   });
   h+='</div></div>';
   if(hits.length>150)h+='<p class="secondary" style="padding:10px 2px">Showing 150 of '+hits.length+'. Search to narrow it down.</p>';
   if(!hits.length)h='<div class="empty-state"><p>Nothing matching that.</p></div>';
+
+  if(q){
+    const idxResult=buildProductIndex();
+    const historyHits=Object.keys(idxResult.idx).map(k=>idxResult.idx[k])
+      .filter(g=>!B.groups[g.key]&&g.desc.toUpperCase().indexOf(q)>=0)
+      .sort((a,b)=>b.lastSeen.localeCompare(a.lastSeen));
+    if(historyHits.length){
+      h+='<div class="band-group" style="margin-top:14px"><div class="band-head" style="cursor:default">'+
+         '<span class="band-title">Also found in earlier lists</span><span class="band-counts">'+historyHits.length+'</span></div>'+
+         '<div class="band-body"><p class="panel-hint" style="padding:12px 16px 0">Not on '+pretty(state.newer)+
+         "'s list, but seen before — click to see its full price history.</p>";
+      historyHits.slice(0,50).forEach(g=>{
+        const spark=sparklineSVG(historyFromBatch(g.key,idxResult.dates,idxResult.days).slice(-CREEP_WINDOW));
+        h+=historyOnlyHTML(g,spark);
+      });
+      if(historyHits.length>50)h+='<div class="band-more">and '+(historyHits.length-50)+' more</div>';
+      h+='</div></div>';
+    }
+  }
+
   el.innerHTML=h;
 }
 
