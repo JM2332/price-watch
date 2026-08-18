@@ -112,12 +112,28 @@ function subscribeDays(){
   if(!db) return;
   if(unsubscribeDays) unsubscribeDays();
   unsubscribeDays=db.collection('days').onSnapshot(snapshot=>{
+    /* Every write resolves updatedAt (serverTimestamp()) from a pending
+       local value to the real one a moment later, which fires this
+       listener a second time for the exact same items/file — a full
+       renderAll() on that spurious echo would tear down and rebuild every
+       dropdown and product row on the page for no reason, and if a click
+       or tap landed in that window it'd hit a DOM node that just got
+       discarded. Only re-render when what's actually shown changed. */
+    let changed=false;
     snapshot.docChanges().forEach(change=>{
       const date=change.doc.id;
-      if(change.type==='removed'){ uncacheDay(date); return; }
+      if(change.type==='removed'){
+        if(state.dates.indexOf(date)>=0){ uncacheDay(date); changed=true; }
+        return;
+      }
       const data=change.doc.data();
+      const existing=get(DAY(date),null);
+      const same=existing&&existing.file===data.file&&JSON.stringify(existing.items)===JSON.stringify(data.items);
+      if(same)return;
       cacheDay(date,{date,file:data.file,items:data.items});
+      changed=true;
     });
+    if(!changed)return;
     if(state.dates.length>=2){ state.older=state.dates[state.dates.length-2]; state.newer=state.dates[state.dates.length-1]; }
     else if(state.dates.length===1){ state.newer=state.dates[0]; state.older=null; }
     renderAll();
@@ -459,8 +475,17 @@ function renderProductOverlay(){
 }
 function openProductHistory(key){
   state.productOverlay=key;
-  renderProductOverlay();
+  /* Show the overlay before rendering into it, and catch render errors,
+     so a bad edge case shows a message instead of the click silently
+     doing nothing — "nothing happened" is much harder to diagnose than
+     a visible error. */
   document.getElementById("product-overlay").classList.remove("hidden");
+  try{ renderProductOverlay(); }
+  catch(err){
+    console.error("Product history render failed",err);
+    document.getElementById("product-overlay-body").innerHTML=
+      '<p class="secondary">Something went wrong showing this product\'s history. Close this and try clicking it again.</p>';
+  }
 }
 function closeProductOverlay(){
   state.productOverlay=null;
